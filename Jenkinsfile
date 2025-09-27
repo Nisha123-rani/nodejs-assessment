@@ -1,81 +1,116 @@
 pipeline {
     agent any
 
+    parameters {
+        choice(
+            name: 'DEPLOY_TARGET',
+            choices: ['docker', 'kubernetes', 'both'],
+            description: 'Select where to deploy: docker only, kubernetes only, or both'
+        )
+    }
+
     environment {
-        // Docker image name
-        IMAGE_NAME = "my-node-app"
-        // Docker registry (optional if pushing to Docker Hub)
-        DOCKER_REGISTRY = "mydockerhubuser"
+        NODE_VERSION = '20'
+        DOCKER_REGISTRY = "docker.io"
+        DOCKER_CREDENTIALS_ID = "docker-hub-credentials"
+        KUBECONFIG_CREDENTIALS_ID = "kubeconfig-local"
+        DOCKER_REPO = "nisha2706/nodejs-todo-app"
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                // Get the code from GitHub
-                git branch: 'main', url: 'https://github.com/Nisha123-rani/nodejs-assessment.git'
+                checkout scm
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Set GIT SHA') {
+            steps {
+                script {
+                    env.GIT_SHA = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+                    env.DOCKER_IMAGE = "${DOCKER_REPO}:${env.GIT_SHA}"
+                    echo "GIT_SHA=${env.GIT_SHA}"
+                    echo "DOCKER_IMAGE=${env.DOCKER_IMAGE}"
+                }
+            }
+        }
+
+        stage('Setup Node.js') {
+            steps {
+                sh """
+                    curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash -
+                    apt-get install -y nodejs
+                """
+            }
+        }
+
+        stage('Install & Test') {
             steps {
                 sh 'npm ci'
-            }
-        }
-
-        stage('Run Tests') {
-            steps {
                 sh 'npm test'
-            }
-        }
-
-        stage('Lint') {
-            steps {
-                sh 'npm run lint || true' // optional, doesn't fail the build
+                sh 'npx eslint src/**/*.js --max-warnings=0'
+                sh 'npm audit --audit-level=high'
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                script {
-                    sh "docker build -t ${IMAGE_NAME}:${env.BUILD_NUMBER} ."
-                }
+                sh "docker build -t ${DOCKER_IMAGE} ."
+            }
+        }
+
+        stage('Scan Docker Image') {
+            steps {
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${DOCKER_IMAGE}"
             }
         }
 
         stage('Push Docker Image') {
+            when {
+                expression { params.DEPLOY_TARGET == 'docker' || params.DEPLOY_TARGET == 'both' }
+            }
             steps {
-                script {
-                    // Login to Docker registry (set credentials in Jenkins)
-                    sh "echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin"
-                    sh "docker tag ${IMAGE_NAME}:${env.BUILD_NUMBER} ${DOCKER_REGISTRY}/${IMAGE_NAME}:${env.BUILD_NUMBER}"
-                    sh "docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${env.BUILD_NUMBER}"
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKER_CREDENTIALS_ID}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS')]) {
+                    sh """
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin ${DOCKER_REGISTRY}
+                        docker push ${DOCKER_IMAGE}
+                    """
                 }
             }
         }
 
-        stage('Deploy') {
+        stage('Deploy to Kubernetes') {
+            when {
+                expression { params.DEPLOY_TARGET == 'kubernetes' || params.DEPLOY_TARGET == 'both' }
+            }
             steps {
-                script {
-                    // Stop old container (if exists)
-                    sh "docker rm -f ${IMAGE_NAME} || true"
-                    // Run new container
-                    sh "docker run -d --name ${IMAGE_NAME} -p 3000:3000 ${DOCKER_REGISTRY}/${IMAGE_NAME}:${env.BUILD_NUMBER}"
+                withCredentials([file(
+                    credentialsId: "${KUBECONFIG_CREDENTIALS_ID}",
+                    variable: 'KUBECONFIG')]) {
+                    sh """
+                        kubectl apply -f k8s/
+                        kubectl set image deployment/my-node-app my-node-app=${DOCKER_IMAGE} --record
+                        kubectl rollout status deployment/my-node-app --timeout=2m
+                    """
                 }
             }
         }
+
     }
 
     post {
         always {
-            echo 'Cleaning up workspace'
-            cleanWs()
-        }
-        success {
-            echo 'Build & deploy successful!'
+            echo "Cleaning up Docker images"
+            sh "docker rmi ${DOCKER_IMAGE} || true"
         }
         failure {
-            echo 'Build or tests failed!'
+            mail to: 'vaid59nisha@example.com',
+                 subject: "Build failed: ${env.JOB_NAME} [${env.BUILD_NUMBER}]",
+                 body: "Check Jenkins console output for details."
         }
     }
 }

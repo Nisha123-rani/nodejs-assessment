@@ -1,22 +1,24 @@
-# build stage
+# Stage 1: Build
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --production=false
+RUN npm ci
 COPY . .
-RUN npm run build
 
-# runtime stage
+# Stage 2: Runtime
 FROM node:20-alpine
-# create non-root user
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 WORKDIR /app
-COPY --from=build /app/package*.json ./
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/src ./src
+
+# Create non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
+# Copy only necessary files
+COPY --from=build /app ./
+
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000
-USER appuser
+
 CMD ["node", "src/index.js"]
 
