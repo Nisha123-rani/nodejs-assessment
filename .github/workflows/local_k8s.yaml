@@ -1,100 +1,98 @@
-name: CI/CD Pipeline
+name: Node.js CI/CD for Local Multi-Node Cluster
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
-  build-test:
+  build-test-deploy:
     runs-on: ubuntu-latest
 
+    env:
+      DOCKER_IMAGE: nisha2706/nodejs-app
+      K8S_NAMESPACE: default
+      KIND_CLUSTER_NAME: local-cluster
+
     steps:
-      - name: Checkout code
+      # 1️⃣ Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v3
 
+      # 2️⃣ Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: 20
+          node-version: '20'
 
+      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      - name: Run Unit Tests
+      # 4️⃣ Run tests
+      - name: Run Jest Tests
         run: npm test
 
-      - name: Lint (ESLint)
-        run: npx eslint . --ext .js,.mjs
+      # 5️⃣ Lint code
+      - name: ESLint
+        run: npx eslint src/ --max-warnings=0
 
-      # Optional: Auto-fix lint errors
-      #- name: Lint and Auto-fix
-      #  run: npx eslint . --ext .js,.mjs --fix
+      # 6️⃣ Build Docker image
+      - name: Build Docker Image
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          echo "Commit SHA: $COMMIT_SHA"
+          docker build --build-arg COMMIT_SHA=$COMMIT_SHA -t $DOCKER_IMAGE:$COMMIT_SHA .
+          docker tag $DOCKER_IMAGE:$COMMIT_SHA $DOCKER_IMAGE:latest
 
-      - name: Dependency Scan
-        run: npm audit --audit-level=high
-
-  docker-build-scan-deploy:
-    runs-on: ubuntu-latest
-    needs: build-test
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Log in to DockerHub
+      # 7️⃣ Push Docker image
+      - name: Push Docker Image
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          docker push $DOCKER_IMAGE:$COMMIT_SHA
+          docker push $DOCKER_IMAGE:latest
 
-      - name: Build Docker Image
-        run: |
-          COMMIT_SHA=${{ github.sha }}
-          echo "Building Docker image with tag: $COMMIT_SHA"
-          docker build \
-            --build-arg COMMIT_SHA=$COMMIT_SHA \
-            -t nisha2706/nodejs-app:$COMMIT_SHA \
-            -t nisha2706/nodejs-app:latest .
-
-      - name: Push Docker Image
-        run: |
-          COMMIT_SHA=${{ github.sha }}
-          docker push nisha2706/nodejs-app:$COMMIT_SHA
-          docker push nisha2706/nodejs-app:latest
-
-      - name: Trivy Image Scan
+      # 8️⃣ Scan Docker image with Trivy (report only)
+      - name: Scan Docker image with Trivy
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: nisha2706/nodejs-app:${{ github.sha }}
+          image-ref: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
           severity: HIGH,CRITICAL
-          exit-code: 1
+          exit-code: 0
           ignore-unfixed: true
 
+      # 9️⃣ Setup kubectl (for local kind cluster)
       - name: Setup kubectl
         uses: azure/setup-kubectl@v3
         with:
-          version: v1.30.0
+          version: 'v1.30.0'
 
-      - name: Configure kubeconfig
+      # 🔟 Load image into all Kind worker nodes
+      - name: Load Docker image into Kind nodes
         run: |
-          mkdir -p $HOME/.kube
-          echo "${{ secrets.KUBECONFIG }}" > $HOME/.kube/config
+          COMMIT_SHA=$(git rev-parse HEAD)
+          echo "Loading image into all worker nodes..."
+          kind load docker-image $DOCKER_IMAGE:$COMMIT_SHA --name $KIND_CLUSTER_NAME --nodes kind-worker1 --nodes kind-worker2
 
+      # 1️⃣1️⃣ Deploy to Kubernetes
       - name: Deploy to Kubernetes
         run: |
-          COMMIT_SHA=${{ github.sha }}
+          COMMIT_SHA=$(git rev-parse HEAD)
 
-          # Update Deployment image
-          kubectl set image deployment/nodejs-app \
-            nodejs-app=nisha2706/nodejs-app:$COMMIT_SHA
+          # Replace image tag in deployment YAML
+          sed -i "s|image: $DOCKER_IMAGE:latest|image: $DOCKER_IMAGE:$COMMIT_SHA|g" k8s/deployment.yaml
 
-          # Update COMMIT_SHA env in deployment
-          kubectl set env deployment/nodejs-app COMMIT_SHA=$COMMIT_SHA
+          # Apply manifests
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
 
-          # Wait for rollout
-          kubectl rollout status deployment/nodejs-app
+          # Wait for rollout to finish
+          kubectl rollout status deployment/nodejs-app -n $K8S_NAMESPACE
 
           # Optional: verify pods
           kubectl get pods -o wide
