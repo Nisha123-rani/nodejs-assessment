@@ -26,7 +26,11 @@ jobs:
         run: npm test
 
       - name: Lint (ESLint)
-        run: npx eslint .
+        run: npx eslint . --ext .js,.mjs
+
+      # Optional: Auto-fix lint errors
+      #- name: Lint and Auto-fix
+      #  run: npx eslint . --ext .js,.mjs --fix
 
       - name: Dependency Scan
         run: npm audit --audit-level=high
@@ -91,4 +95,7 @@ jobs:
 
           # Wait for rollout
           kubectl rollout status deployment/nodejs-app
+
+          # Optional: verify pods
+          kubectl get pods -o wide
 
