@@ -10,7 +10,6 @@ pipeline {
     }
 
     environment {
-        NODE_VERSION = '20'
         DOCKER_REGISTRY = "docker.io"
         DOCKER_CREDENTIALS_ID = "docker-hub-credentials"
         KUBECONFIG_CREDENTIALS_ID = "kubeconfig-local"
@@ -36,12 +35,10 @@ pipeline {
             }
         }
 
-        stage('Setup Node.js') {
+        stage('Verify Node.js') {
             steps {
-                sh """
-                    curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash -
-                    apt-get install -y nodejs
-                """
+                sh 'node -v'
+                sh 'npm -v'
             }
         }
 
@@ -108,9 +105,7 @@ pipeline {
             sh "docker rmi ${DOCKER_IMAGE} || true"
         }
         failure {
-            mail to: 'vaid59nisha@example.com',
-                 subject: "Build failed: ${env.JOB_NAME} [${env.BUILD_NUMBER}]",
-                 body: "Check Jenkins console output for details."
+            echo "Build failed! Check console output for errors."
         }
     }
 }
