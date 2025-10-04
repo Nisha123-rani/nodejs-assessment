@@ -1,8 +1,11 @@
-const express = require('express');
+import express from 'express';
+import todosRoutes from './todos.js';
+
 const router = express.Router();
-const todos = require('./todos');
 
-router.use('/todos', todos);
+// Mount todos routes at /todos
+router.use('/todos', todosRoutes);
 
-module.exports = router;
+// Export default router
+export default router;
 
